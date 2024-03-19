@@ -1,36 +1,79 @@
-import * as L from 'leaflet';
-import { BannedArea, BannedAreas, NWRElement, tagsToHTML } from './overpass.ts';
+import {
+  BannedArea,
+  BannedAreas,
+  isNode,
+  isRelation,
+  isWay,
+  NWRElement,
+  tagsToHTML
+} from './overpass.ts';
+import { Circle, FeatureGroup, Polygon } from 'leaflet';
 
-export class ExclusionCircle extends L.Circle {
+export class ExclusionCircle extends FeatureGroup<Polygon | Circle> {
   readonly id: string;
   readonly element: NWRElement;
   readonly reason: BannedArea;
 
-  constructor(e: NWRElement, options?: L.CircleOptions) {
-    const latLng: [number, number] =
-      e.type === 'node'
-        ? [e.lat, e.lon]
-        : [
-            (e.bounds.maxlat + e.bounds.minlat) / 2,
-            (e.bounds.maxlon + e.bounds.minlon) / 2
-          ];
+  constructor(e: NWRElement) {
+    super();
     const reason = getReason(e);
-    super(latLng, {
-      radius: 100,
-      stroke: false,
-      fillOpacity: 0.3,
-      fillColor: colorMap[reason],
-      ...options
-    });
+    const color = colorMap[getReason(e)];
+    switch (e.type) {
+      case 'node':
+        this.addLayer(this.getCircle(e, color));
+        break;
+      case 'way':
+        if (e.geometry.length > 3) {
+          this.addLayer(this.getPolygon(e.geometry, color));
+        } else {
+          this.addLayer(this.getCircle(e.geometry[0], color));
+        }
+        break;
+      case 'relation':
+        e.members
+          .filter((m) => !isRelation(m))
+          .forEach((m) => {
+            if (isWay(m)) {
+              m.geometry.length > 3
+                ? this.addLayer(this.getPolygon(m.geometry, color))
+                : this.addLayer(this.getCircle(m.geometry[0], color));
+            } else if (isNode(m)) {
+              this.addLayer(this.getCircle(m, color));
+            }
+          });
+        break;
+    }
 
     this.id = e.id;
     this.element = e;
     this.reason = reason;
 
     this.bindPopup(
-      `<div class="whitespace-pre-wrap">${tagsToHTML({ reason, ...e.tags })}</div>`,
+      `<div class="whitespace-pre-wrap flex flex-col gap-3">${tagsToHTML({ reason, ...e.tags })}<a href="https://www.openstreetmap.org/${e.type}/${e.id}" target="_blank">↗ Auf OpenStreetMap öffnen</a></div>`,
       { maxWidth: 500 }
     );
+  }
+
+  private getPolygon(g: { lat: number; lon: number }[], fillColor: string) {
+    return new Polygon(
+      g.map(({ lat, lon }) => ({ lat, lng: lon })),
+      {
+        fillColor,
+        fillOpacity: 0.4,
+        fill: true,
+        stroke: false
+      }
+    );
+  }
+
+  private getCircle(g: { lat: number; lon: number }, fillColor: string) {
+    return new Circle([g.lat, g.lon], {
+      radius: 10,
+      fillColor,
+      fillOpacity: 0.4,
+      fill: true,
+      stroke: false
+    });
   }
 }
 

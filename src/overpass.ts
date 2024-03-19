@@ -29,15 +29,25 @@ export interface RelationElement extends APIElement {
     maxlat: number;
     maxlon: number;
   };
-  members: {
-    type: 'way';
-    ref: number;
-    role: string;
-    geometry: { lat: number; lon: number }[];
-  }[];
+  members: (Omit<
+    NodeElement | WayElement | Omit<RelationElement, 'members'>,
+    'id' | 'tags' | 'bounds'
+  > & { role: string })[];
 }
 
 export type NWRElement = Readonly<NodeElement | WayElement | RelationElement>;
+
+export function isWay(e: { type: NWRElement['type'] }): e is WayElement {
+  return e.type === 'way';
+}
+export function isNode(e: { type: NWRElement['type'] }): e is NodeElement {
+  return e.type === 'node';
+}
+export function isRelation(e: {
+  type: NWRElement['type'];
+}): e is RelationElement {
+  return e.type === 'relation';
+}
 
 export function tagsToHTML(tags: APIElement['tags']) {
   const entries = Object.entries(tags);

@@ -6,15 +6,21 @@ import {
   FeatureGroup,
   GeoJSON,
   Map as LMap,
-  Polygon,
   Popup,
   TileLayer
 } from 'leaflet';
 import 'leaflet-easybutton';
 import { BannedArea, BannedAreas, NWRElement } from './overpass.ts';
-import { colorMap, ExclusionCircle, getReason } from './ExclusionCircle.ts';
-import { buffer, dissolve, featureCollection } from '@turf/turf';
-import { Feature } from '@turf/helpers';
+import { colorMap, ExclusionCircle } from './ExclusionCircle.ts';
+import {
+  buffer,
+  dissolve,
+  featureCollection,
+  FeatureCollection,
+  truncate
+} from '@turf/turf';
+// @ts-ignore
+import type { Feature } from '@turf/helpers';
 
 const m_mono = new TileLayer(
   'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
@@ -31,13 +37,22 @@ const features: { [reason in BannedArea]: FeatureGroup<ExclusionCircle> } = {
   [BannedAreas.PEDESTRIAN]: new FeatureGroup(),
   [BannedAreas.OTHER]: new FeatureGroup()
 };
+const exclusionZone = new FeatureGroup<GeoJSON>();
 
-const center = [53.0552419, 8.7712428] as [number, number];
+const buffers: { [reason in BannedArea]: (FeatureCollection | Feature)[] } = {
+  [BannedAreas.SCHOOL]: [],
+  [BannedAreas.UNIVERSITY]: [],
+  [BannedAreas.SPORT]: [],
+  [BannedAreas.PEDESTRIAN]: [],
+  [BannedAreas.OTHER]: []
+};
+
+const center = [53.0711829, 8.8087718] as [number, number];
 const map = new LMap('map', {
   center,
-  zoom: 19,
+  zoom: 14,
   zoomControl: true,
-  layers: [m_mono, ...Object.values(features)]
+  layers: [m_mono, exclusionZone, ...Object.values(features)]
 });
 
 new Popup()
@@ -54,13 +69,51 @@ map.on('moveend', async () => {
   await fetchData();
 });
 let loading = false;
-const areas = new FeatureGroup();
-let exclusionZone: GeoJSON | undefined;
+
+function showBuffer() {
+  console.time('prepare');
+  map.attributionControl.setPrefix('Berechne Zone');
+  const fs = Object.entries(buffers)
+    .filter(([k]) => map.hasLayer(features[k as keyof typeof features]))
+    .flatMap(([_, buff]) => {
+      const fs: Feature[] = buff.flatMap((f) =>
+        f.type === 'Feature' ? [f] : f.features
+      );
+      return fs;
+    });
+
+  if (fs.length > 0) {
+    exclusionZone.clearLayers();
+    console.timeEnd('prepare');
+    try {
+      console.time('dissolve');
+      const b = dissolve(featureCollection(fs));
+      const zone = new GeoJSON(b, {
+        style: { color: 'red', fillOpacity: 0.1, weight: 1 }
+      });
+      console.timeEnd('dissolve');
+      console.time('render');
+      exclusionZone.addLayer(zone);
+      console.timeEnd('render');
+      exclusionZone.bringToBack();
+    } catch (err) {
+      console.error('dissolve', err);
+    }
+  }
+  map.attributionControl.setPrefix('');
+}
+
+Object.values(features).forEach((f) => {
+  f.on('add', showBuffer);
+  f.on('remove', showBuffer);
+});
+
 async function fetchData() {
   if (map.getZoom() < 12 || loading) {
     return;
   }
   loading = true;
+  map.attributionControl.setPrefix('Lädt...');
   const bounds = map.getBounds();
   const query = `[out:json][timeout:25][bbox:${bounds.getSouth()},${bounds.getWest()},${bounds.getNorth()},${bounds.getEast()}];
 (
@@ -91,55 +144,47 @@ out geom;`;
     .catch(() => ({ elements: [] }))
     .then((r) => r.elements as NWRElement[]);
 
+  loading = false;
+  console.time('parse');
+  map.attributionControl.setPrefix('Berechne Orte...');
   const ids = elements.map((e) => e.id);
-  const exclude: string[] = [];
+  const exclude: ExclusionCircle[] = [];
+  Object.values(buffers).forEach((b) => b.splice(0));
   Object.values(features).forEach((f) =>
     f.eachLayer((l) => {
       const id = (l as ExclusionCircle).id;
       if (ids.includes(id)) {
-        exclude.push(id);
+        exclude.push(l as ExclusionCircle);
         return;
       }
       f.removeLayer(l);
     })
   );
 
-  const buffers: Feature[] = [];
   elements.forEach((e) => {
-    if (exclude.includes(e.id)) {
-      return;
+    let marker = exclude.find((it) => it.id === e.id);
+    if (!marker) {
+      marker = new ExclusionCircle(e);
     }
-    const marker = new ExclusionCircle(e);
-    features[marker.reason].addLayer(marker);
 
-    if (e.type === 'way') {
-      const area = new Polygon(
-        e.geometry.map(({ lat, lon }) => ({ lat, lng: lon })),
-        {
-          fillColor: colorMap[getReason(e)],
-          fillOpacity: 0.4,
-          fill: true,
-          stroke: false
-        }
-      );
-      area.addTo(map);
-      const b = buffer(area.toGeoJSON(), 100, { units: 'meters' });
+    features[marker.reason].addLayer(marker);
+    try {
+      const b = buffer(marker.toGeoJSON(), 100, { units: 'meters' });
 
       // new GeoJSON(b).addTo(map);
-      buffers.push(b);
+      buffers[marker.reason].push(truncate(b));
+    } catch (err) {
+      console.error(
+        `Buffer calc for id=${e.id}, type=${e.type} failed`,
+        e,
+        err
+      );
     }
   });
+  console.timeEnd('parse');
 
-  // const forbidden = buffers.reduce((u, b) => union(u, b), buffers.pop());
-  // new GeoJSON(forbidden).addTo(map);
-  const b = dissolve(featureCollection(buffers));
-  exclusionZone?.removeFrom(map);
-  exclusionZone = new GeoJSON(b, {
-    style: { color: 'red', fillOpacity: 0.1, weight: 1 }
-  });
-  exclusionZone.addTo(map);
-
-  loading = false;
+  queueMicrotask(showBuffer);
+  map.attributionControl.setPrefix('');
 }
 
 new Control.Layers(
