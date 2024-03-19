@@ -48,7 +48,9 @@ const buffers: { [reason in BannedArea]: (FeatureCollection | Feature)[] } = {
 
 let center: [number, number] = [53.0711829, 8.8087718];
 let zoom = 14;
-const urlPosition = /#@(\d+.?\d*),(\d+.?\d*),(\d+)/.exec(window.location.hash);
+const urlPosition = /#@(-?\d+\.?\d*),(-?\d+\.?\d*),(\d+)/.exec(
+  window.location.hash
+);
 if (urlPosition && urlPosition.length === 4) {
   const lat = parseFloat(urlPosition[1]);
   const lon = parseFloat(urlPosition[2]);
