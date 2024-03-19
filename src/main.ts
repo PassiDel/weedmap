@@ -46,10 +46,22 @@ const buffers: { [reason in BannedArea]: (FeatureCollection | Feature)[] } = {
   [BannedAreas.OTHER]: []
 };
 
-const center = [53.0711829, 8.8087718] as [number, number];
+let center: [number, number] = [53.0711829, 8.8087718];
+let zoom = 14;
+const urlPosition = /#@(\d+.?\d*),(\d+.?\d*),(\d+)/.exec(window.location.hash);
+if (urlPosition && urlPosition.length === 4) {
+  const lat = parseFloat(urlPosition[1]);
+  const lon = parseFloat(urlPosition[2]);
+  const z = parseInt(urlPosition[3]);
+  if (!isNaN(lat) && !isNaN(lon) && !isNaN(z)) {
+    center = [lat, lon];
+    zoom = z;
+  }
+}
+
 const map = new LMap('map', {
   center,
-  zoom: 14,
+  zoom,
   zoomControl: true,
   layers: [m_mono, exclusionZone, ...Object.values(features)]
 });
@@ -66,6 +78,12 @@ new Popup()
   .addTo(map);
 
 map.on('moveend', async () => {
+  const center = map.getCenter();
+  window.history.pushState(
+    {},
+    '',
+    `${import.meta.env.BASE_URL || '/'}#@${center.lat.toFixed(4)},${center.lng.toFixed(4)},${map.getZoom()}`
+  );
   await fetchData();
 });
 let loading = false;
