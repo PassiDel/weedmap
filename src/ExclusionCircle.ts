@@ -8,11 +8,14 @@ import {
   tagsToHTML
 } from './overpass.ts';
 import { Circle, FeatureGroup, Polygon } from 'leaflet';
+// @ts-ignore
+import { buffer, truncate } from '@turf/turf';
 
 export class ExclusionCircle extends FeatureGroup<Polygon | Circle> {
   readonly id: string;
   readonly element: NWRElement;
   readonly reason: BannedArea;
+  readonly buffer: ReturnType<buffer> | null = null;
 
   constructor(e: NWRElement) {
     super();
@@ -36,7 +39,9 @@ export class ExclusionCircle extends FeatureGroup<Polygon | Circle> {
             if (isWay(m)) {
               m.geometry.length > 3
                 ? this.addLayer(this.getPolygon(m.geometry, color))
-                : this.addLayer(this.getCircle(m.geometry[0], color));
+                : m.geometry.forEach((g) =>
+                    this.addLayer(this.getCircle(g, color))
+                  );
             } else if (isNode(m)) {
               this.addLayer(this.getCircle(m, color));
             }
@@ -47,7 +52,17 @@ export class ExclusionCircle extends FeatureGroup<Polygon | Circle> {
     this.id = e.id;
     this.element = e;
     this.reason = reason;
-
+    try {
+      this.buffer = truncate(
+        buffer(this.toGeoJSON(), 100, { units: 'meters' })
+      );
+    } catch (err) {
+      console.error(
+        `Buffer calc for id=${e.id}, type=${e.type} failed`,
+        e,
+        err
+      );
+    }
     this.bindPopup(
       `<div class="whitespace-pre-wrap flex flex-col gap-3">${tagsToHTML({ reason, ...e.tags })}<a href="https://www.openstreetmap.org/${e.type}/${e.id}" target="_blank">↗ Auf OpenStreetMap öffnen</a></div>`,
       { maxWidth: 500 }

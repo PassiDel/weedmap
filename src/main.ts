@@ -6,21 +6,20 @@ import {
   FeatureGroup,
   GeoJSON,
   Map as LMap,
+  Polygon,
   Popup,
   TileLayer
 } from 'leaflet';
 import 'leaflet-easybutton';
 import { BannedArea, BannedAreas, NWRElement } from './overpass.ts';
 import { colorMap, ExclusionCircle } from './ExclusionCircle.ts';
-import {
-  buffer,
-  dissolve,
-  featureCollection,
-  FeatureCollection,
-  truncate
-} from '@turf/turf';
+// @ts-ignore
+import { FeatureCollection, truncate } from '@turf/turf';
 // @ts-ignore
 import type { Feature } from '@turf/helpers';
+import workerUrl from './worker/worker.ts?worker&url';
+
+const worker = new Worker(workerUrl, { type: 'module' });
 
 const m_mono = new TileLayer(
   'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
@@ -70,8 +69,18 @@ map.on('moveend', async () => {
 });
 let loading = false;
 
+worker.addEventListener(
+  'message',
+  (b: MessageEvent<FeatureCollection<Polygon>>) => {
+    exclusionZone.clearLayers();
+    const zone = new GeoJSON(b.data, {
+      style: { color: 'red', fillOpacity: 0.1, weight: 1 }
+    });
+    exclusionZone.addLayer(zone);
+    exclusionZone.bringToBack();
+  }
+);
 function showBuffer() {
-  console.time('prepare');
   map.attributionControl.setPrefix('Berechne Zone');
   const fs = Object.entries(buffers)
     .filter(([k]) => map.hasLayer(features[k as keyof typeof features]))
@@ -83,22 +92,7 @@ function showBuffer() {
     });
 
   if (fs.length > 0) {
-    exclusionZone.clearLayers();
-    console.timeEnd('prepare');
-    try {
-      console.time('dissolve');
-      const b = dissolve(featureCollection(fs));
-      const zone = new GeoJSON(b, {
-        style: { color: 'red', fillOpacity: 0.1, weight: 1 }
-      });
-      console.timeEnd('dissolve');
-      console.time('render');
-      exclusionZone.addLayer(zone);
-      console.timeEnd('render');
-      exclusionZone.bringToBack();
-    } catch (err) {
-      console.error('dissolve', err);
-    }
+    worker.postMessage(fs);
   }
   map.attributionControl.setPrefix('');
 }
@@ -145,7 +139,6 @@ out geom;`;
     .then((r) => r.elements as NWRElement[]);
 
   loading = false;
-  console.time('parse');
   map.attributionControl.setPrefix('Berechne Orte...');
   const ids = elements.map((e) => e.id);
   const exclude: ExclusionCircle[] = [];
@@ -168,20 +161,10 @@ out geom;`;
     }
 
     features[marker.reason].addLayer(marker);
-    try {
-      const b = buffer(marker.toGeoJSON(), 100, { units: 'meters' });
-
-      // new GeoJSON(b).addTo(map);
-      buffers[marker.reason].push(truncate(b));
-    } catch (err) {
-      console.error(
-        `Buffer calc for id=${e.id}, type=${e.type} failed`,
-        e,
-        err
-      );
+    if (marker.buffer) {
+      buffers[marker.reason].push(marker.buffer);
     }
   });
-  console.timeEnd('parse');
 
   queueMicrotask(showBuffer);
   map.attributionControl.setPrefix('');
